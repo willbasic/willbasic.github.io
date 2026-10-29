@@ -28,10 +28,11 @@ button.alt{background:transparent;color:var(--tx);border:1px solid var(--bd)}
 .n>span{color:var(--mu);font-size:.85rem}
 .lab{font-size:.85rem;color:var(--mu);margin:14px 0 0}
 .grid{overflow-x:auto}
-table{border-collapse:collapse;width:100%;min-width:460px;font-size:.8rem;text-align:center}
+table{border-collapse:collapse;width:100%;min-width:540px;font-size:.8rem;text-align:center}
 th{color:var(--mu);font-weight:500;padding:2px}
 td{padding:2px}
-.c{border-radius:4px;padding:5px 0;color:#2a2420}
+.c{border-radius:4px;padding:5px 0;color:#2a2420;white-space:nowrap}
+.c small{font-size:.75em;opacity:.7}
 .msg{margin-top:8px;font-size:.9rem;color:var(--mu)}
 .top{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
 .top span{background:var(--bg);border:1px solid var(--bd);border-radius:6px;padding:2px 8px;font-size:.85rem}
@@ -112,7 +113,7 @@ function render(){
     for(let p=0;p<6;p++){
       const mx=Math.max(...pos[p]),mn=Math.min(...pos[p]);
       const a=mx===mn?0.5:(pos[p][d]-mn)/(mx-mn);
-      h+='<td><div class="c" style="background:hsl('+Math.round(120*(1-a))+',70%,62%)">'+pos[p][d]+"</div></td>";
+      h+='<td><div class="c" style="background:hsl('+Math.round(120*(1-a))+',70%,62%)">'+pos[p][d]+' <small>ครั้ง</small></div></td>';
     }
     h+="</tr>";
   }
