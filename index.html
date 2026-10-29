@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>สุ่มเลขตามสถิติ</title>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);
+--bg:#faf7f2;--card:#fff;--tx:#2a2420;--mu:#7a6f66;--ac:#b8272d;--bd:#e8e0d5;--bar:#e9b44c}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#1c1917;--card:#292524;--tx:#f5efe8;--mu:#a8a29e;--ac:#ef5b5b;--bd:#3d3733;--bar:#d99a2b}}
+:root[data-theme="dark"]{--bg:#1c1917;--card:#292524;--tx:#f5efe8;--mu:#a8a29e;--ac:#ef5b5b;--bd:#3d3733;--bar:#d99a2b}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font-family:"Sarabun","Noto Sans Thai",system-ui,sans-serif;line-height:1.5}
+main{max-width:680px;margin:0 auto;padding:20px 16px 48px}
+h1{font-size:1.5rem;margin:0 0 4px}
+.sub{color:var(--mu);margin:0 0 20px;font-size:.95rem}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:16px;margin-bottom:16px}
+h2{font-size:1.05rem;margin:0 0 12px}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+input[type=number],input[type=text],textarea{font:inherit;color:var(--tx);background:var(--bg);border:1px solid var(--bd);border-radius:8px;padding:8px 10px}
+input[type=number]{width:80px}
+button{font:inherit;cursor:pointer;border:0;border-radius:8px;padding:9px 16px;background:var(--ac);color:#fff;font-weight:600}
+button.alt{background:transparent;color:var(--tx);border:1px solid var(--bd)}
+.nums{display:flex;flex-direction:column;gap:8px;margin-top:14px}
+.n{display:flex;flex-direction:column;align-items:center;gap:0;border:1px dashed var(--bd);border-radius:12px;padding:8px 10px 10px}
+.n b{font-size:clamp(2.6rem,13vw,4.2rem);line-height:1.1;letter-spacing:.1em;font-variant-numeric:tabular-nums;color:var(--ac);font-weight:700;white-space:nowrap}
+.n>span{color:var(--mu);font-size:.85rem}
+.lab{font-size:.85rem;color:var(--mu);margin:14px 0 0}
+.grid{overflow-x:auto}
+table{border-collapse:collapse;width:100%;min-width:460px;font-size:.8rem;text-align:center}
+th{color:var(--mu);font-weight:500;padding:2px}
+td{padding:2px}
+.c{border-radius:4px;padding:5px 0;color:#2a2420}
+.msg{margin-top:8px;font-size:.9rem;color:var(--mu)}
+.top{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.top span{background:var(--bg);border:1px solid var(--bd);border-radius:6px;padding:2px 8px;font-size:.85rem}
+.list{display:none;margin-top:12px}
+.list.open{display:block}
+.lg{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:4px;max-height:360px;overflow-y:auto;margin-top:8px;padding:4px}
+.li{font-variant-numeric:tabular-nums;font-size:.9rem;border:1px solid var(--bd);border-radius:6px;padding:3px 8px;display:flex;justify-content:space-between;gap:6px}
+.li i{color:var(--mu);font-style:normal;font-size:.75rem}
+.d{display:inline-block;min-width:.64em;text-align:center}
+.d.rl{opacity:.5}
+.d.lk{animation:pop .4s ease-out}
+@media (prefers-reduced-motion:reduce){.d.lk{animation:none}}
+@keyframes pop{0%{transform:scale(1.6)}100%{transform:scale(1)}}
+button:disabled{opacity:.6;cursor:default}
+.warn{font-size:.8rem;color:var(--mu);text-align:center;margin-top:20px}
+</style>
+</head>
+<body>
+<main>
+<h1>🎰 สุ่มเลขตามสถิติ</h1>
+<p class="sub">ถ่วงน้ำหนักตามความถี่ของรางวัลที่ 1 จากประวัติ <b id="total">0</b> งวด<span id="upd"></span></p>
+
+<div class="card">
+<h2>สุ่มเลข</h2>
+<div class="row">
+<label>จำนวนชุด <input type="number" id="amount" value="1" min="1" max="50"></label>
+<button id="go">สุ่มเลย</button>
+<button class="alt" id="copy">คัดลอก</button>
+</div>
+<div class="lab">รางวัลที่ 1 (6 หลัก สุ่มถ่วงน้ำหนักทีละหลัก)</div>
+<div class="nums" id="r6"></div>
+</div>
+
+<div class="card">
+<h2>ความถี่ของแต่ละหลัก</h2>
+<div class="grid"><table id="heat"></table></div>
+<div class="row" style="margin-top:8px;gap:8px;font-size:.8rem;color:var(--mu)"><span>ออกน้อย</span><div style="flex:1;height:10px;border-radius:5px;background:linear-gradient(90deg,hsl(120,70%,62%),hsl(60,70%,62%),hsl(0,70%,62%))"></div><span>ออกบ่อย</span></div>
+<div class="lab">เลขท้าย 2 ตัวที่ออกบ่อยที่สุด</div>
+<div class="top" id="top2"></div>
+</div>
+
+<div class="card">
+<div class="row" style="justify-content:space-between">
+<h2 style="margin:0">เลขทั้งหมดในประวัติ</h2>
+<button class="alt" id="showall">แสดงเลขทั้งหมด</button>
+</div>
+<div class="list" id="listbox">
+<div class="row"><input type="text" id="q" inputmode="numeric" placeholder="ค้นหาเลข" style="flex:1;min-width:120px"><span class="msg" id="lcount" style="margin:0"></span></div>
+<div class="lg" id="lg"></div>
+<div class="msg">ตัวเลขเล็ก = ลำดับในประวัติ (1 = งวดใหม่สุด)</div>
+</div>
+</div>
+
+<p class="warn">เพื่อความบันเทิงเท่านั้น หวยเป็นการสุ่ม สถิติในอดีตไม่ได้เพิ่มโอกาสถูกรางวัล<br>ข้อมูลผลรางวัลที่ 1 จาก Sanook และสำนักงานสลากกินแบ่งรัฐบาล (GLO)</p>
+</main>
+<script>
+const DEFAULT=["402701","730640","417212","004615","932479","639214","751495","287184","173770","107387","536077","309612","292514","833009","820866","340563","174629","878972","837706","763895","461252","458145","345898","059696","876978","074646","506356","994865","811852","245324","949246","507392","559352","251309","213388","266227","669687","757563","818894","847377","558700","807779","730209","097863","669843","187221","536044","482962","718665","608662","199606","095867","407041","367336","434503","518504","530593","205690","980116","943598","803481","997626","253603","941395","607063","105979","625544","356757","251097","557990","743951","931446","727202","320812","915478","471782","260453","169530","922605","264872","125272","132903","843019","984906","087907","025873","417652","590417","297411","812519","157196","845093","375805","121789","913106","613106","484669","943703","929332","331583","436594","620405","981417","361807","319196","155012","658642","395919","970618","737867","061905","098597","944308","880159","819068","639235","077258","032761","045037","386372","578171","070935","114475","046750","910261","556725","713517","691861","292972","684579","501272","100787","472270","890422","835538","424603","912307","384395","803628","201303","100994","972661","506404","286051","837893","244083","999997","945811","569391","873286","347258","516967","831567","051095","503446","875938","781403","589227","491774","510541","529924","453522","017223","967375","812564","691197","340388","798787","775476","387006","369765","943647","174055","516461","962526","061324","570331","109767","724628","345650","074824","967134","197079","735867","356564","021840","989903","149840","200515","452643","149760","734510","586117","386602","596324","963623","223131","988117","075629","248038","739229","412073","218559","759415","309915","026853","203823","911234","955596","451005","292391","533726","413494","880714","170143","143224","715431","756519","820327","112360","943142","053630","454891","008656","816729","392785","273863","978453","229116","054672","145157","377712","435286","086069","858383","785438","571947","887102","240650","638684","254004","272932","449764","082460","073816","511825","141737","399459","221609","066720","134918","439686","356364","927800","304371","008217","930255","915350","795283","361211","968630","594825","743148","021094","033363","518677","121507","759049","644742","388881","011421","543466","506260","605704","048151","240237","001864","155537","244351","461704","948354","480449","479804","206608","656409","375615","772269","856763","662842","766391","468728","378477","673920","781198","087523","103297","153406","028866","531404","906318","384245","180149","306902","561072","341767","168795","806925","739804","963289","647882","562684","548123","321327","356435","566996","646905","289673","935489","687125","603458","843846","571688","968433","976241","368257","565566","820981","302358","529524","110443","639500","524694","281343","124025","540143","329997","683877","895590","904050","915900","159373","882727","814418","889501","583470","257562","607064","222518","648684","320605","451445","526402","884178","408147","997777","805540","955756","511052","731198","724533","536960","218756","116556","622953","351276","562370","406417","054136","825988","814931","593331","656037","481746","610089","281062","884112","334380","181752","813993","191100","621377","488372","017422","354656","911097","210008","180387","480239","500104","444874","480012","360371","211743","959517","364222","215227","133707","186312","073577","994304","685141","776980","055986","689140","258487","169387","202912","015865","462933","154986","000816","207542","930456","777661","111411","294452","368415","816578","268812","553091","038730","534533","743212","218596","074114","205434","002612","272028","431277","882911","012377","695993","380377","850348","257374","943671","729111","414875","329231","453011","982800","012653","074946","936685","137054","212684","556010","595411","513501","562481","927907","032988","430667","499336","331810","476207","429924","527384","565151","393194","836393","232897","430374","405105","622780","876763","742425","277859","769925","838739","778584"];
+let nums=DEFAULT.slice();
+const $=id=>document.getElementById(id);
+let pos,last2;
+function stats(){
+  pos=Array.from({length:6},()=>Array(10).fill(0));
+  last2={};
+  nums.forEach(n=>{[...n].forEach((d,i)=>pos[i][+d]++);const k=n.slice(-2);last2[k]=(last2[k]||0)+1;});
+}
+function pick(items,weights){
+  let t=weights.reduce((a,b)=>a+b,0),r=Math.random()*t;
+  for(let i=0;i<items.length;i++){r-=weights[i];if(r<0)return items[i];}
+  return items[items.length-1];
+}
+function render(){
+  stats();
+  $("total").textContent=nums.length;
+  const names=["แสน","หมื่น","พัน","ร้อย","สิบ","หน่วย"];
+  let h="<tr><th></th>"+names.map(n=>"<th>หลัก"+n+"</th>").join("")+"</tr>";
+  for(let d=0;d<10;d++){
+    h+="<tr><th>"+d+"</th>";
+    for(let p=0;p<6;p++){
+      const mx=Math.max(...pos[p]),mn=Math.min(...pos[p]);
+      const a=mx===mn?0.5:(pos[p][d]-mn)/(mx-mn);
+      h+='<td><div class="c" style="background:hsl('+Math.round(120*(1-a))+',70%,62%)">'+pos[p][d]+"</div></td>";
+    }
+    h+="</tr>";
+  }
+  $("heat").innerHTML=h;
+  const top=Object.entries(last2).sort((a,b)=>b[1]-a[1]).slice(0,10);
+  $("top2").innerHTML=top.map(([k,v])=>"<span><b>"+k+"</b> × "+v+"</span>").join("");
+}
+const DIG=[0,1,2,3,4,5,6,7,8,9];
+function compute(){
+  const amt=Math.max(1,Math.min(50,parseInt($("amount").value)||1));
+  const out=[];
+  for(let i=0;i<amt;i++){
+    let t="";
+    for(let p=0;p<6;p++)t+=pick(DIG,pos[p]);
+    out.push(t);
+  }
+  return out;
+}
+function rows(arr,spinning){
+  $("r6").innerHTML=arr.map((v,i)=>"<div class='n'><span>ชุดที่ "+(i+1)+"</span><b>"+
+    [...v].map(c=>"<span class='d"+(spinning?" rl":"")+"'>"+(spinning?"0":c)+"</span>").join("")+"</b></div>").join("");
+}
+function placeholder(){
+  $("r6").innerHTML="<div class='msg'>กดปุ่ม “สุ่มเลย” เพื่อเริ่มสุ่ม กดอีกครั้งเพื่อหยุด</div>";
+}
+// สถานะ: idle (รอ) -> spinning (หมุนเรื่อย ๆ) -> stopping (กำลังหยุดทีละหลัก) -> idle
+let mode="idle",lastResult=null,timer=null,cells=[];
+function ui(){
+  const m=mode;
+  $("go").disabled=(m==="stopping");
+  $("go").textContent=m==="spinning"?"■ หยุด":(m==="stopping"?"กำลังหยุด...":"สุ่มเลย");
+  $("copy").disabled=(m!=="idle");
+  $("amount").disabled=(m!=="idle");
+}
+function spin(){
+  if(mode==="stopping")return;
+  if(mode==="idle"){
+    const amt=Math.max(1,Math.min(50,parseInt($("amount").value)||1));
+    rows(Array(amt).fill("000000"),true);
+    cells=[...document.querySelectorAll("#r6 .n b")].map(b=>[...b.children].map(el=>({el,fin:null,at:Infinity,done:false})));
+    mode="spinning";ui();
+    timer=setInterval(tick,60);
+    return;
+  }
+  // กดซ้ำ = หยุด: สุ่มผลจริงตอนนี้ แล้วให้หยุดทีละหลักจากซ้ายไปขวา
+  const res=compute();                       // ใช้จำนวนชุดเท่าที่กำลังหมุนอยู่
+  while(res.length>cells.length)res.pop();
+  lastResult=res;
+  const now=performance.now();
+  cells.forEach((row,i)=>row.forEach((c,k)=>{c.fin=res[i][k];c.at=now+200+k*220;}));
+  mode="stopping";ui();
+}
+function tick(){
+  const now=performance.now();let left=0;
+  for(const row of cells)for(const c of row){
+    if(c.done)continue;
+    if(now>=c.at){c.el.textContent=c.fin;c.el.className="d lk";c.done=true;}
+    else{c.el.textContent=Math.floor(Math.random()*10);left++;}
+  }
+  if(mode==="stopping"&&!left){clearInterval(timer);timer=null;mode="idle";ui();}
+}
+$("go").onclick=spin;
+$("copy").onclick=async()=>{
+  if(!lastResult)return;
+  const t=lastResult.join("\n");
+  try{await navigator.clipboard.writeText(t);$("copy").textContent="คัดลอกแล้ว ✓";setTimeout(()=>$("copy").textContent="คัดลอก",1500);}catch(e){}
+};
+function renderList(){
+  const q=$("q").value.trim();
+  let h="",c=0;
+  nums.forEach((n,i)=>{
+    if(q&&!n.includes(q))return;
+    c++;
+    h+="<div class='li'><i>"+(i+1)+"</i><b>"+n+"</b></div>";
+  });
+  $("lg").innerHTML=h;
+  $("lcount").textContent="แสดง "+c+" จาก "+nums.length+" งวด";
+}
+$("showall").onclick=()=>{
+  const o=$("listbox").classList.toggle("open");
+  $("showall").textContent=o?"ซ่อนเลขทั้งหมด":"แสดงเลขทั้งหมด";
+  if(o)renderList();
+};
+$("q").oninput=renderList;
+const _render=render;
+render=function(){_render();if($("listbox").classList.contains("open"))renderList();};
+async function loadHistory(){
+  // โหลดประวัติล่าสุดจากไฟล์ (ไฟล์นี้ถูกอัปเดตอัตโนมัติ) ถ้าโหลดไม่ได้ใช้ข้อมูลที่ฝังในหน้านี้แทน
+  try{
+    const r=await fetch("lottery_all_history.txt?t="+Date.now(),{cache:"no-store"});
+    if(r.ok){
+      const t=(await r.text()).split(/\s+/).filter(x=>/^\d{6}$/.test(x));
+      if(t.length>50){nums=t;render();}
+    }
+  }catch(e){}
+  try{
+    const r=await fetch("last_updated.txt?t="+Date.now(),{cache:"no-store"});
+    if(r.ok){
+      const d=new Date((await r.text()).trim());
+      if(!isNaN(d))$("upd").textContent=" · ตรวจข้อมูลล่าสุด "+d.toLocaleString("th-TH",{dateStyle:"medium",timeStyle:"short"});
+    }
+  }catch(e){}
+}
+render();placeholder();loadHistory();
+</script>
+</body>
+</html>
