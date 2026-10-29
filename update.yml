@@ -1,0 +1,47 @@
+name: อัปเดตข้อมูลหวยอัตโนมัติ
+
+on:
+  schedule:
+    # ทุกวัน 18:00 น. เวลาไทย (11:00 UTC) งวดที่ออกแล้วจะถูกเก็บเข้าประวัติ
+    # วันที่ไม่มีงวดใหม่จะแค่ตรวจแล้วจบ (ใช้เวลาไม่กี่วินาที)
+    - cron: "0 11 * * *"
+  workflow_dispatch:   # กดรันเองได้ที่แท็บ Actions
+
+permissions:
+  contents: write      # ให้บอทบันทึกไฟล์ประวัติที่อัปเดตแล้วกลับเข้า repository
+
+concurrency:
+  group: update-lottery
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: ติดตั้งไลบรารี
+        run: pip install -r requirements.txt
+
+      - name: ดึงผลจาก Sanook และตรวจกับ GLO
+        run: python update.py
+
+      - name: บันทึกผลกลับเข้า repository
+        run: |
+          date -u +"%Y-%m-%dT%H:%M:%SZ" > last_updated.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for f in lottery_all_history.txt last_updated.txt lottery_sanook_cache.json lottery_glo_cache.json lottery_verify_report.txt; do
+            [ -f "$f" ] && git add "$f"
+          done
+          if git diff --cached --quiet; then
+            echo "ไม่มีการเปลี่ยนแปลง"
+          else
+            git commit -m "อัปเดตข้อมูลหวยอัตโนมัติ"
+            git push
+          fi
