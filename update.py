@@ -24,6 +24,7 @@ import re
 import sys
 import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime
 from urllib.parse import urljoin
 
@@ -620,6 +621,187 @@ def glo_conflicts():
 
 
 # ---------------------------------------------------------------- ประวัติ: เรียงใหม่สุดไว้บนสุด + ตรวจกับ Sanook
+# ---------------------------------------------------------------- รางวัลอื่น: เลขหน้า 3 ตัว / เลขท้าย 3 ตัว / เลขท้าย 2 ตัว
+# อ่านจากหน้ารายงวดของ Sanook (https://news.sanook.com/lotto/check/DDMMYYYY/) ทีละงวด แล้วเก็บแคชไว้
+# ผลรวมอยู่ในไฟล์ lottery_all_prizes.csv (เรียงงวดใหม่สุดไว้บนสุด) คอลัมน์: date,first,front3,back3,last2
+PRIZES_CACHE_FILE = os.path.join(HERE, "lottery_prizes_cache.json")
+PRIZES_CSV_FILE = os.path.join(HERE, "lottery_all_prizes.csv")
+PRIZES_DEBUG_FILE = os.path.join(HERE, "lottery_prize_debug.txt")   # ตัวอย่างหน้าที่อ่านไม่ได้ (ส่งให้ผู้พัฒนาดูได้)
+USE_PRIZES = True
+PRIZE_WORKERS = 3
+PRIZE_DELAY = 0.2           # วินาที เว้นระยะระหว่างคำขอ ไม่ให้ถี่เกินไป
+PRIZE_MAX_ERRORS = 8        # เปิดหน้ารายงวดไม่ได้ติดกันเท่านี้ครั้งโดยไม่เคยสำเร็จ -> ข้ามขั้นตอนนี้
+LAST_PRIZES = {"enabled": False, "total": 0, "new": 0, "failed": 0, "mismatch": 0, "odd": 0, "error": ""}
+
+# รางวัลที่ 1 แบบผ่อนปรน: รองรับ "รางวัลที่ 1 : 011781" และ "รางวัลที่ 1 รางวัลละ 6,000,000 บาท 011781"
+_PRIZE1_LOOSE = r"(?<!เคียง)รางวัลที่\s*1[\s:：]*(?:รางวัลละ\s*6,000,000\s*บาท[\s:：]*)?(\d{6})(?!\d)"
+_PRIZE_STOP = r"(?:เลขหน้า\s*3\s*ตัว|เลขท้าย\s*3\s*ตัว|เลขท้าย\s*2\s*ตัว|รางวัลข้างเคียง|รางวัลที่\s*2)"
+
+
+def _segment(tail, label_re):
+    """ข้อความหลังป้าย label_re จนถึงป้ายถัดไป (ไม่เกิน 200 ตัวอักษร)"""
+    m = re.search(label_re, tail)
+    if not m:
+        return None
+    rest = tail[m.end():]
+    n = re.search(_PRIZE_STOP, rest)
+    return rest[: min(n.start(), 200)] if n else rest[:200]
+
+
+def _numbers(seg, width):
+    """เลข width หลักในข้อความ (ไม่นับตัวเลขที่เป็นส่วนของจำนวนเงิน เช่น 4,000 หรือ 6,000,000 แต่นับ "060, 521" ที่คั่นด้วยจุลภาค)"""
+    return re.findall(rf"(?<![\d.])(?<!\d,)\d{{{width}}}(?![\d.])(?!,\d{{3}})", seg or "")
+
+
+def parse_prizes_text(text):
+    """จากข้อความหน้ารายงวด คืน {"f","f3","b3","l2"} หรือ None ถ้าอ่านไม่ได้
+    เริ่มอ่านหลังรางวัลที่ 1 เพื่อไม่ไปติดข้อความโปรยหัวข้อที่กล่าวถึงรางวัลเหล่านี้ซ้ำ ๆ"""
+    m = re.search(_PRIZE1_LOOSE, text)
+    if not m:
+        return None
+    tail = text[m.end():]
+    f3 = _numbers(_segment(tail, r"เลขหน้า\s*3\s*ตัว"), 3)
+    b3 = _numbers(_segment(tail, r"เลขท้าย\s*3\s*ตัว"), 3)
+    l2 = _numbers(_segment(tail, r"เลขท้าย\s*2\s*ตัว"), 2)
+    if not f3 or not b3 or not l2:
+        return None
+    return {"f": m.group(1), "f3": f3[:4], "b3": b3[:4], "l2": l2[0]}
+
+
+def parse_check_prizes(html, d):
+    text = _to_text(html)
+    if thai_date(d) not in text:
+        return None  # ไม่ใช่หน้าของงวดนี้
+    return parse_prizes_text(text)
+
+
+def load_prizes_cache():
+    try:
+        with open(PRIZES_CACHE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    ok = {}
+    for k, v in data.items():
+        if (re.fullmatch(r"\d{8}", k) and isinstance(v, dict) and re.fullmatch(r"\d{6}", str(v.get("f", "")))
+                and v.get("f3") and v.get("b3") and re.fullmatch(r"\d{2}", str(v.get("l2", "")))):
+            ok[k] = v
+    return ok
+
+
+def save_prizes_cache(cache):
+    try:
+        tmp = PRIZES_CACHE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False, sort_keys=True)
+        os.replace(tmp, PRIZES_CACHE_FILE)
+    except OSError as e:
+        _err(f"บันทึกแคชรางวัลอื่นไม่สำเร็จ ({e})")
+
+
+def _save_prize_debug(d, html):
+    try:
+        text = _to_text(html)
+        i = text.find("รางวัลที่ 1")
+        with open(PRIZES_DEBUG_FILE, "a", encoding="utf-8") as f:
+            f.write(f"=== {thai_date(d)} (อ่านเลขหน้า/ท้าย 3 ตัวไม่ได้) ===\n{re.sub(chr(10) + '+', chr(10), text[max(i, 0):max(i, 0) + 1200])}\n\n")
+    except OSError:
+        pass
+
+
+def update_prizes(progress=None, fresh=False):
+    """ดึงเลขหน้า 3 ตัว/ท้าย 3 ตัว/ท้าย 2 ตัวของทุกงวดที่ Sanook มี (เฉพาะงวดที่ยังไม่มีในแคช)
+    ทุกงวดจะเทียบรางวัลที่ 1 ในหน้ารายงวดกับที่อ่านได้จากหน้าสรุป ถ้าไม่ตรงจะไม่บันทึกงวดนั้น"""
+    LAST_PRIZES.update(enabled=True, total=0, new=0, failed=0, mismatch=0, odd=0, error="")
+    san = _cache_draws(load_cache())
+    cache = {} if fresh else load_prizes_cache()
+    todo = [k for k in sorted(san, reverse=True) if k not in cache]
+    if fresh and os.path.exists(PRIZES_DEBUG_FILE):
+        os.remove(PRIZES_DEBUG_FILE)
+    state = {"errors": 0, "ok": 0, "abort": False, "last": "", "debug": 0}
+    if progress:
+        progress(0, len(todo))
+
+    def work(k):
+        if state["abort"]:
+            return k, "skip", None
+        d = date(int(k[:4]), int(k[4:6]), int(k[6:]))
+        time.sleep(PRIZE_DELAY)
+        try:
+            html = _get(CHECK.format(d=d.day, m=d.month, y=d.year + 543))
+        except requests.exceptions.HTTPError as e:
+            if e.response is not None and e.response.status_code in (404, 410):
+                return k, "miss", None
+            state["errors"] += 1
+            state["last"] = str(e)
+        except requests.exceptions.RequestException as e:
+            state["errors"] += 1
+            state["last"] = str(e)
+        else:
+            state["errors"] = 0
+            state["ok"] += 1
+            got = parse_check_prizes(html, d)
+            if got is None and state["debug"] < 3:
+                state["debug"] += 1
+                _save_prize_debug(d, html)
+            return k, "ok", got
+        if state["ok"] == 0 and state["errors"] >= PRIZE_MAX_ERRORS:
+            state["abort"] = True
+        return k, "error", None
+
+    done = 0
+    if todo:
+        with ThreadPoolExecutor(max_workers=PRIZE_WORKERS) as ex:
+            for fut in as_completed([ex.submit(work, k) for k in todo]):
+                k, kind, got = fut.result()
+                done += 1
+                if kind == "ok" and got:
+                    if got["f"] != san[k]:
+                        LAST_PRIZES["mismatch"] += 1
+                        d = date(int(k[:4]), int(k[4:6]), int(k[6:]))
+                        LAST_WARNINGS.append(
+                            f"งวด {thai_date(d)}: หน้าสรุปได้รางวัลที่ 1 = {san[k]} แต่หน้ารายงวดได้ {got['f']} ไม่ตรงกัน จึงไม่บันทึกรางวัลอื่นของงวดนี้"
+                        )
+                    else:
+                        cache[k] = got
+                        LAST_PRIZES["new"] += 1
+                        if len(got["f3"]) != 2 or len(got["b3"]) != 2:
+                            LAST_PRIZES["odd"] += 1
+                else:
+                    LAST_PRIZES["failed"] += 1
+                if progress and done % 5 == 0:
+                    progress(done, len(todo))
+                if done % 40 == 0:
+                    save_prizes_cache(cache)
+        if progress:
+            progress(len(todo), len(todo))
+        save_prizes_cache(cache)
+    if state["abort"]:
+        LAST_PRIZES["error"] = f"เปิดหน้ารายงวดของ Sanook ไม่ได้ ({state['last'][:80]})"
+    elif todo and LAST_PRIZES["new"] == 0 and LAST_PRIZES["failed"] and not LAST_PRIZES["mismatch"]:
+        LAST_PRIZES["error"] = "เปิดหน้ารายงวดได้ แต่อ่านเลขหน้า/ท้าย 3 ตัวและท้าย 2 ตัวไม่ได้ (ดูตัวอย่างใน lottery_prize_debug.txt)"
+    LAST_PRIZES["total"] = len(cache)
+    return LAST_PRIZES
+
+
+def write_prizes_csv(filename=None):
+    """เขียน lottery_all_prizes.csv เรียงงวดใหม่สุดไว้บนสุด คืนจำนวนแถวที่มีรางวัลอื่นครบ"""
+    filename = filename or PRIZES_CSV_FILE
+    cache = load_prizes_cache()
+    lines, full = ["date,first,front3,back3,last2"], 0
+    for d, n in draws_newest_first():
+        p = cache.get(f"{d:%Y%m%d}")
+        if p and p["f"] == n:
+            lines.append(f"{d:%Y-%m-%d},{n},{' '.join(p['f3'])},{' '.join(p['b3'])},{p['l2']}")
+            full += 1
+        else:
+            lines.append(f"{d:%Y-%m-%d},{n},,,")
+    if full:
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+    return full
+
+
 def read_history(filename=None):
     filename = filename or HISTORY_FILE
     if not os.path.exists(filename):
@@ -788,6 +970,15 @@ if __name__ == "__main__":
             print(f"รายงานละเอียด: {REPORT_FILE}")
         else:
             print("ไฟล์ประวัติเรียงถูกต้องและครบอยู่แล้ว ไม่ต้องแก้")
+    if USE_PRIZES and "--no-prizes" not in sys.argv:
+        print("กำลังดึงเลขหน้า 3 ตัว / เลขท้าย 3 ตัว / เลขท้าย 2 ตัว (ครั้งแรกอาจใช้เวลาประมาณ 2-5 นาที)...")
+        update_prizes(lambda n, t: print(f"\r  {n}/{t} งวด", end="") if t else None)
+        print()
+        if not verify_only:
+            rows = write_prizes_csv()
+            print(f"รางวัลอื่นครบ {rows} งวด (ใหม่ {LAST_PRIZES['new']} · ข้าม/อ่านไม่ได้ {LAST_PRIZES['failed']}) -> {PRIZES_CSV_FILE}")
+        if LAST_PRIZES["error"]:
+            print("⚠", LAST_PRIZES["error"])
     for w in LAST_WARNINGS:
         print("⚠", w)
     for e in LAST_ERRORS:
