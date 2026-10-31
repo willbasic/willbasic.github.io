@@ -636,9 +636,11 @@ PRIZE_WORKERS = 3
 PRIZE_DELAY = 0.2           # วินาที เว้นระยะระหว่างคำขอ ไม่ให้ถี่เกินไป
 PRIZE_MAX_ERRORS = 8        # เปิดหน้ารายงวดไม่ได้ติดกันเท่านี้ครั้งโดยไม่เคยสำเร็จ -> ข้ามขั้นตอนนี้
 PRIZE_SOURCES = ("pptv", "sanook")   # ลำดับการลอง
+PPTV_OLDER = True            # เพิ่มงวดเก่ากว่าที่ Sanook มี (ก่อนปี 2550) จากรายชื่องวดของ PPTVHD36
+PPTV_MIN_DATE = (1990, 1, 1) # ไม่ย้อนเก่ากว่านี้
 PPTV_URL = "https://www.pptvhd36.com/lotto/check?date={d:%Y-%m-%d}"
 LAST_PRIZES = {"enabled": False, "total": 0, "new": 0, "failed": 0, "mismatch": 0, "odd": 0, "error": "",
-               "nodate": 0, "noparse": 0, "http": 0, "by_source": {}}
+               "nodate": 0, "noparse": 0, "http": 0, "by_source": {}, "older_new": 0, "older": 0}
 
 # รางวัลที่ 1 แบบผ่อนปรน: รองรับ "รางวัลที่ 1 : 011781" และ "รางวัลที่ 1 รางวัลละ 6,000,000 บาท 011781"
 _PRIZE1_LOOSE = r"(?<!เคียง)รางวัลที่\s*1[\s:：]*(?:รางวัลละ\s*6,000,000\s*บาท[\s:：]*)?(\d{6})(?!\d)"
@@ -715,7 +717,7 @@ PPTV_SESSION.headers.update({
     "Accept-Language": "th,en;q=0.8",
 })
 _PPTV_HEAD = re.compile(
-    rf"งวดประจำวันที่\s*(\d{{1,2}})\s*({_MONTHS_RE})\s*(\d{{4}})[\s#*]{{0,30}}รางวัลที่\s*1\s*(?:มี\s*1\s*)?รางวัล\S{{0,3}}\s*ละ\s*6,000,000\s*บาท"
+    rf"งวดประจำวันที่\s*(\d{{1,2}})\s*({_MONTHS_RE})\s*(\d{{4}})[\s#*]{{0,30}}รางวัลที่\s*1\s*(?:มี\s*1\s*)?รางวัล\S{{0,3}}\s*ละ\s*\d{{1,3}}(?:,\d{{3}})+\s*บาท"
 )
 _PPTV_FIRST = re.compile(r"(?<![\d,.])(\d)\s+(\d)\s+(\d)\s+(\d)\s+(\d)\s+(\d)(?![\d,])|(?<![\d,.])(\d{6})(?!\d)")
 
@@ -756,12 +758,19 @@ def parse_pptv_text(text, d):
     if not mf:
         return None, "noparse"
     first = "".join(mf.groups()[:6]) if mf.group(1) else mf.group(7)
-    f3 = _numbers(_segment(tail, r"เลขหน้า\s*3\s*ตัว"), 3, 2)
-    b3 = _numbers(_segment(tail, r"เลขท้าย\s*3\s*ตัว"), 3, 2)
-    l2 = _numbers(_segment(tail, r"เลขท้าย\s*2\s*ตัว"), 2, 1)
-    if not f3 or not b3 or not l2:
+    out = {"f": first}
+    for key, label, width, expect in (("f3", r"เลขหน้า\s*3\s*ตัว", 3, 2), ("b3", r"เลขท้าย\s*3\s*ตัว", 3, 2), ("l2", r"เลขท้าย\s*2\s*ตัว", 2, 1)):
+        seg = _segment(tail, label)
+        if seg is None:                      # หน้านั้นไม่มีรางวัลชนิดนี้เลย (งวดเก่า) -> เว้นว่าง
+            out[key] = "" if key == "l2" else []
+            continue
+        nums = _numbers(seg, width, expect)
+        if not nums:                         # มีป้ายแต่อ่านเลขไม่ได้ = อ่านผิดรูปแบบ
+            return None, "noparse"
+        out[key] = nums[0] if key == "l2" else nums[:4]
+    if not (out["f3"] or out["b3"] or out["l2"]):
         return None, "noparse"
-    return {"f": first, "f3": f3[:4], "b3": b3[:4], "l2": l2[0]}, ""
+    return out, ""
 
 
 def load_prizes_cache():
@@ -773,7 +782,8 @@ def load_prizes_cache():
     ok = {}
     for k, v in data.items():
         if (re.fullmatch(r"\d{8}", k) and isinstance(v, dict) and re.fullmatch(r"\d{6}", str(v.get("f", "")))
-                and v.get("f3") and v.get("b3") and re.fullmatch(r"\d{2}", str(v.get("l2", "")))):
+                and isinstance(v.get("f3", []), list) and isinstance(v.get("b3", []), list)
+                and re.fullmatch(r"(\d{2})?", str(v.get("l2", "")))):
             ok[k] = v
     return ok
 
@@ -800,6 +810,25 @@ def _save_prize_debug(d, reason, text, source=""):
         pass
 
 
+def fetch_pptv_dates(ref_date):
+    """รายชื่อวันที่ออกรางวัลทั้งหมดที่ PPTV แสดง (อ่านจากหน้าของงวด ref_date) เรียงใหม่->เก่า"""
+    try:
+        text = _to_text(_get_pptv(PPTV_URL.format(d=ref_date)))
+    except requests.exceptions.RequestException as e:
+        LAST_WARNINGS.append(f"อ่านรายชื่องวดเก่าจาก PPTVHD36 ไม่ได้ จึงไม่ได้เพิ่มงวดเก่า ({str(e)[:70]})")
+        return []
+    out = set()
+    lo = date(*PPTV_MIN_DATE)
+    for dd, mon, yy in re.findall(rf"งวดประจำวันที่\s*(\d{{1,2}})\s*({_MONTHS_RE})\s*(\d{{4}})", text):
+        try:
+            d = date(int(yy) - 543, MONTHS.index(mon) + 1, int(dd))
+        except ValueError:
+            continue
+        if lo <= d <= date.today():
+            out.add(d)
+    return sorted(out, reverse=True)
+
+
 def _try_source(source, d):
     """('error', None, '', ข้อความ) | ('miss', ...) | ('page', ผล หรือ None, เหตุผล, ข้อความหน้า)"""
     try:
@@ -823,10 +852,15 @@ def update_prizes(progress=None, fresh=False):
     ลองตามลำดับ PRIZE_SOURCES ทุกงวดจะเทียบรางวัลที่ 1 ในหน้ากับที่อ่านได้จากหน้าสรุปของ Sanook
     ถ้าไม่ตรงจะลองแหล่งถัดไป และถ้ายังไม่ตรงจะไม่บันทึกงวดนั้น"""
     LAST_PRIZES.update(enabled=True, total=0, new=0, failed=0, mismatch=0, odd=0, error="",
-                       nodate=0, noparse=0, http=0, by_source={s_: 0 for s_ in PRIZE_SOURCES})
+                       nodate=0, noparse=0, http=0, by_source={s_: 0 for s_ in PRIZE_SOURCES}, older_new=0, older=0)
     san = _cache_draws(load_cache())
+    glo_known = _cache_draws(load_glo_cache()) if USE_GLO else {}
     cache = {} if fresh else load_prizes_cache()
-    todo = [k for k in sorted(san, reverse=True) if k not in cache]
+    older = set()
+    if PPTV_OLDER and san:
+        ref = max(date(int(k[:4]), int(k[4:6]), int(k[6:])) for k in san)
+        older = {f"{d:%Y%m%d}" for d in fetch_pptv_dates(ref)} - set(san)
+    todo = [k for k in sorted(set(san) | older, reverse=True) if k not in cache]
     if todo and os.path.exists(PRIZES_DEBUG_FILE):
         os.remove(PRIZES_DEBUG_FILE)   # เริ่มตัวอย่างใหม่ทุกรอบ ไม่ให้ไฟล์โตเรื่อย ๆ
     state = {"abort": False, "dead": {}, "debug": {},
@@ -840,7 +874,9 @@ def update_prizes(progress=None, fresh=False):
         d = date(int(k[:4]), int(k[4:6]), int(k[6:]))
         time.sleep(PRIZE_DELAY)
         mismatch, last_reason = None, "http"
-        for src in PRIZE_SOURCES:
+        g = glo_known.get(k)
+        expected = san.get(k) or (g if g and g != "-" else None)
+        for src in (PRIZE_SOURCES if k in san else ("pptv",)):
             if state["dead"].get(src):
                 continue
             status, got, reason, text = _try_source(src, d)
@@ -867,8 +903,8 @@ def update_prizes(progress=None, fresh=False):
                 if n < 2:
                     _save_prize_debug(d, reason, text, src)
                 continue
-            if got["f"] != san[k]:
-                mismatch = (src, got["f"])
+            if expected and got["f"] != expected:
+                mismatch = (src, got["f"], expected)
                 continue
             return k, "ok", got, src
         if mismatch:
@@ -886,12 +922,14 @@ def update_prizes(progress=None, fresh=False):
                     cache[k] = got
                     LAST_PRIZES["new"] += 1
                     LAST_PRIZES["by_source"][src] += 1
+                    if k not in san:
+                        LAST_PRIZES["older_new"] += 1
                     if len(got["f3"]) != 2 or len(got["b3"]) != 2:
                         LAST_PRIZES["odd"] += 1
                 elif kind == "mismatch":
                     LAST_PRIZES["mismatch"] += 1
                     LAST_WARNINGS.append(
-                        f"งวด {thai_date(d)}: รางวัลที่ 1 จากหน้าสรุป Sanook = {san[k]} แต่หน้า {got[0]} ได้ {got[1]} ไม่ตรงกัน จึงไม่บันทึกรางวัลอื่นของงวดนี้"
+                        f"งวด {thai_date(d)}: รางวัลที่ 1 ที่ใช้เทียบ = {got[2]} แต่หน้า {got[0]} ได้ {got[1]} ไม่ตรงกัน จึงไม่บันทึกงวดนี้"
                     )
                 else:
                     LAST_PRIZES["failed"] += 1
@@ -913,6 +951,7 @@ def update_prizes(progress=None, fresh=False):
         else:
             LAST_PRIZES["error"] = "เปิดหน้ารายงวดได้ แต่อ่านเลขหน้า/ท้าย 3 ตัวและท้าย 2 ตัวไม่ได้ (ดูตัวอย่างใน lottery_prize_debug.txt และท้าย lottery_verify_report.txt)"
     LAST_PRIZES["total"] = len(cache)
+    LAST_PRIZES["older"] = sum(1 for k in cache if k not in san)
     return LAST_PRIZES
 
 
@@ -920,7 +959,7 @@ def append_prizes_report():
     """ต่อท้ายรายงานด้วยสรุปรางวัลอื่น (และตัวอย่างหน้าที่อ่านไม่ได้) เพื่อให้เปิดดูใน repository ได้โดยไม่ต้องเปิด log"""
     P = LAST_PRIZES
     lines = ["", "[5] รางวัลอื่น (เลขหน้า 3 ตัว / เลขท้าย 3 ตัว / เลขท้าย 2 ตัว)",
-             f"    มีข้อมูลในแคช {P['total']} งวด ดึงใหม่รอบนี้ {P['new']} งวด",
+             f"    มีข้อมูลในแคช {P['total']} งวด (เป็นงวดเก่ากว่า Sanook {P['older']} งวด) ดึงใหม่รอบนี้ {P['new']} งวด (งวดเก่า {P['older_new']})",
              f"    อ่านไม่ได้ {P['failed']} งวด (ไม่พบวันที่ในหน้า {P['nodate']} · พบวันที่แต่อ่านเลขไม่ได้ {P['noparse']} · เปิดหน้าไม่ได้ {P['http']})",
              f"    รางวัลที่ 1 ไม่ตรงกับหน้าสรุป {P['mismatch']} งวด · รูปแบบแปลก (ไม่ใช่ 2/2/1 ตัว) {P['odd']} งวด",
              "    แหล่งที่ใช้รอบนี้: " + " · ".join(f"{ {'pptv': 'PPTVHD36', 'sanook': 'Sanook'}.get(k, k)} {v} งวด" for k, v in P.get("by_source", {}).items())]
@@ -979,6 +1018,9 @@ def draws_newest_first(include_glo=True):
     if include_glo and USE_GLO:
         for k, v in _cache_draws(load_glo_cache()).items():
             merged.setdefault(k, v)
+    if PPTV_OLDER:                                  # งวดเก่าจาก PPTV (ใช้เมื่อ Sanook/GLO ไม่มีงวดนั้น)
+        for k, p in load_prizes_cache().items():
+            merged.setdefault(k, p["f"])
     out = [(date(int(k[:4]), int(k[4:6]), int(k[6:])), v) for k, v in merged.items()]
     return sorted(out, key=lambda x: x[0], reverse=True)
 
